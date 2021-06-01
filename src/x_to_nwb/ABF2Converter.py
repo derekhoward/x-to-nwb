@@ -18,8 +18,11 @@ import numpy as np
 import pyabf
 
 from pynwb.device import Device
+from pynwb.file import Subject
 from pynwb import NWBHDF5IO, NWBFile
 from pynwb.icephys import IntracellularElectrode
+
+from ndx_dandi_icephys import DandiIcephysMetadata
 
 from .conversion_utils import (
     PLACEHOLDER,
@@ -50,6 +53,8 @@ class ABF2Converter:
         searchSettingsFile=True,
         includeChannelList=None,
         discardChannelList=None,
+        stimulus_name=None,
+        metadata=None
     ):
         """
         Convert the given ABF file to NWB. By default all ADC channel are written in to the NWB file.
@@ -61,6 +66,8 @@ class ABF2Converter:
         searchSettingsFile    -- Search the JSON settings file and warn if it could not be found
         includeChannelList    -- ADC channels to write into the NWB file
         discardChannelList    -- ADC channels to not write into the NWB file
+        stimulus_name         -- 
+        metadata              -- Metadata dictionary with user-defined values for some nwb fields
         """
 
         inFiles = []
@@ -81,6 +88,7 @@ class ABF2Converter:
         self.discardChannelList = discardChannelList
 
         self.compression = compression
+        self.metadata = metadata
         self.searchSettingsFile = searchSettingsFile
 
         self._settings = self._getJSONFiles(inFileOrFolder)
@@ -102,13 +110,25 @@ class ABF2Converter:
 
         nwbFile = self._createFile()
 
+        # If Subject information is present in metadata
+        if self.metadata is not None:
+            if 'Subject' in self.metadata:
+                nwbFile.subject = self._createSubject()
+            if 'lab_meta_data' in self.metadata:
+                nwbFile.add_lab_meta_data(
+                    DandiIcephysMetadata(
+                        cell_id=self.metadata['lab_meta_data'].get('cell_id', None),
+                        tissue_sample_id=self.metadata['lab_meta_data'].get('tissue_sample_id', None),
+                    )
+                )
+
         device = self._createDevice()
         nwbFile.add_device(device)
 
         electrodes = self._createElectrodes(device)
         nwbFile.add_icephys_electrode(electrodes)
 
-        for i in self._createStimulusSeries(electrodes):
+        for i in self._createStimulusSeries(electrodes, stimulus_name):
             nwbFile.add_stimulus(i)
 
         for i in self._createAcquiredSeries(electrodes):
@@ -209,8 +229,8 @@ class ABF2Converter:
             raise ValueError("Found no channels.")
         elif sum(abf._dacSection.nWaveformEnable) == 0:
             raise ValueError("All channels are turned off.")
-        elif len(np.unique(abf._adcSection.nTelegraphInstrument)) > 1:
-            raise ValueError("Unexpected mismatching telegraph instruments.")
+        # elif len(np.unique(abf._adcSection.nTelegraphInstrument)) > 1:
+        #     raise ValueError("Unexpected mismatching telegraph instruments.")
         elif len(abf._adcSection.sTelegraphInstrument[0]) == 0:
             raise ValueError("Empty telegraph name.")
         elif len(abf._protocolSection.sDigitizerType) == 0:
@@ -340,27 +360,26 @@ class ABF2Converter:
         if len(session_description) == 0:
             session_description = PLACEHOLDER
 
-        identifier = sha256(" ".join([abf.fileGUID for abf in self.abfs]).encode()).hexdigest()
-        session_start_time = datetime.combine(
-            self.refabf.abfDateTime.date(), self.refabf.abfDateTime.time(), tzinfo=tzlocal()
-        )
         creatorName = self.refabf._stringsIndexed.uCreatorName
         creatorVersion = formatVersion(self.refabf.creatorVersion)
-        experiment_description = f"{creatorName} v{creatorVersion}"
-        source_script_file_name = "conversion.py"
-        source_script = json.dumps(getPackageInfo(), sort_keys=True, indent=4)
-        session_id = PLACEHOLDER
-
-        return NWBFile(
+        nwbfile_kwargs = dict(
             session_description=session_description,
-            identifier=identifier,
-            session_start_time=session_start_time,
+            identifier=sha256(" ".join([abf.fileGUID for abf in self.abfs]).encode()).hexdigest(),
+            session_start_time=self.refabf.abfDateTime,
             experimenter=None,
-            experiment_description=experiment_description,
-            session_id=session_id,
-            source_script_file_name=source_script_file_name,
-            source_script=source_script,
+            experiment_description="{} v{}".format(creatorName, creatorVersion),
+            source_script_file_name="run_x_to_nwb_conversion.py",
+            source_script=json.dumps(getPackageInfo(), sort_keys=True, indent=4),
+            session_id=PLACEHOLDER
         )
+
+        if self.metadata and 'NWBFile' in self.metadata:
+            nwbfile_kwargs.update(self.metadata['NWBFile'])
+
+        # Create nwbfile with initial metadata
+        nwbfile = NWBFile(**nwbfile_kwargs)
+
+        return nwbfile
 
     def _createDevice(self):
         """
@@ -371,6 +390,12 @@ class ABF2Converter:
         telegraph = self.refabf._adcSection.sTelegraphInstrument[0]
 
         return Device(f"{digitizer} with {telegraph}")
+
+    def _createSubject(self):
+        """
+        Create a pynwb Subject object from the metadata contents.
+        """
+        return Subject(**self.metadata['Subject'])
 
     def _createElectrodes(self, device):
         """
@@ -390,7 +415,7 @@ class ABF2Converter:
 
         return delta.total_seconds() + abf.sweepX[0]
 
-    def _createStimulusSeries(self, electrodes):
+    def _createStimulusSeries(self, electrodes, stimulus_name):
         """
         Return a list of pynwb stimulus series objects created from the ABF file contents.
         """
@@ -414,6 +439,7 @@ class ABF2Converter:
                     name, counter = createSeriesName("index", counter, total=self.totalSeriesCount)
                     data = convertDataset(abf.sweepC * scale_factor, self.compression)
                     conversion, _ = parseUnit(abf.sweepUnitsC)
+                    conversion = 0.001
                     electrode = electrodes[channel]
                     gain = abf._dacSection.fDACScaleFactor[channel]
                     resolution = np.nan
@@ -448,9 +474,10 @@ class ABF2Converter:
                             description=description,
                             stimulus_description=stimulus_description,
                         )
-
-                        series.append(stimulus)
-
+                        if stimulus_name is None:
+                            series.append(stimulus)
+                        elif abf.dacNames[channel] == stimulus_name:
+                            series.append(stimulus)
         return series
 
     def _findSettingsEntry(self, abf):
@@ -544,7 +571,7 @@ class ABF2Converter:
                     d["whole_cell_capacitance_comp"] = np.nan
                     d["whole_cell_series_resistance_comp"] = np.nan
 
-            elif clampMode in (I_CLAMP_MODE, I0_CLAMP_MODE):
+            elif clampMode in (I_CLAMP_MODE,):  # I0_CLAMP_MODE):
                 if settings["GetHoldingEnable"]:
                     d["bias_current"] = settings["GetHolding"]
                 else:
@@ -570,7 +597,7 @@ class ABF2Converter:
                 d["resistance_comp_prediction"] = np.nan
                 d["whole_cell_capacitance_comp"] = np.nan
                 d["whole_cell_series_resistance_comp"] = np.nan
-            elif clampMode in (I_CLAMP_MODE, I0_CLAMP_MODE):
+            elif clampMode is I_CLAMP_MODE:  # in (I_CLAMP_MODE, I0_CLAMP_MODE):
                 d["bias_current"] = np.nan
                 d["bridge_balance"] = np.nan
                 d["capacitance_compensation"] = np.nan
@@ -617,6 +644,7 @@ class ABF2Converter:
                     name, counter = createSeriesName("index", counter, total=self.totalSeriesCount)
                     data = convertDataset(abf.sweepY, self.compression)
                     conversion, _ = parseUnit(abf.sweepUnitsY)
+                    conversion = 1e-12
                     electrode = electrodes[channel]
                     gain = abf._adcSection.fADCProgrammableGain[channel]
                     resolution = np.nan
