@@ -203,7 +203,7 @@ class ABF1Converter:
                     scaledUnit = 'pA'
 
                     conversion, unit = self._unitConversion(scaledUnit)
-                    conversion = 0.001 #hardcoded
+                    conversion = 1e-9 #hardcoded
                     electrode = self.electrode
                     gain = self.gain
                     resolution = np.nan
@@ -276,7 +276,7 @@ class ABF1Converter:
                     seriesName = f"Index_{idx}_{i}_{channelIndex}"
                     data = abfFile.sweepY
                     conversion, unit = self._unitConversion('V')
-                    conversion = 1e-12 # hardcoded
+                    conversion = 1.0 # hardcoded
                     electrode = self.electrode
                     gain = self.gain 
                     resolution = np.nan
