@@ -8,6 +8,8 @@ from dateutil.tz import tzlocal
 from pynwb import NWBHDF5IO, NWBFile
 
 from .conversion_utils import convertDataset, V_CLAMP_MODE, I_CLAMP_MODE, getStimulusSeriesClass, getAcquiredSeriesClass
+from pynwb.file import Subject
+from .conversion_utils import PLACEHOLDER, getPackageInfo
 
 
 class ABF1Converter:
@@ -38,6 +40,7 @@ class ABF1Converter:
         outputFilePath,
         acquisitionChannelName=None,
         stimulusChannelName=None,
+        metadata=None,
         responseGain=1,
         stimulusGain=1,
         responseOffset=0,
@@ -97,7 +100,7 @@ class ABF1Converter:
         self.outputPath = outputFilePath
 
         # Take metadata input, and return hard coded values for None
-
+        self.metadata = metadata
         self.responseGain = responseGain
         self.stimulusGain = stimulusGain
         self.responseOffset = responseOffset
@@ -129,23 +132,51 @@ class ABF1Converter:
         Creates the NWB file for the cell, as defined by PyNWB
         """
 
-        self.start_time = datetime.combine(
-            self.abfFiles[0].abfDateTime.date(), self.abfFiles[0].abfDateTime.time(), tzinfo=tzlocal()
-        )
+        def formatVersion(version):
+            return f"{version['major']}.{version['minor']}.{version['bugfix']}.{version['build']}"
+
+        def getFileComments(abfs):
+            """
+            Return the file comments of all files. Returns an empty string if none are present.
+            """
+
+            comments = {}
+
+            for abf in abfs:
+                if len(abf.abfFileComment) > 0:
+                    comments[os.path.basename(abf.abfFilePath)] = abf.abfFileComment
+
+            if not len(comments):
+                return ""
+
+            return json.dumps(comments)
+
+        session_description = getFileComments(self.abfFiles)
+        if len(session_description) == 0:
+            session_description = PLACEHOLDER
+
+        self.start_time = self.abfFiles[0].abfDateTime
         self.inputCellName = os.path.basename(self.inputPath)
-
-        creatorInfo = self.abfFiles[0]._headerV1.sCreatorInfo
-        creatorVersion = self.abfFiles[0]._headerV1.creatorVersionString
-        experiment_description = f"{creatorInfo} v{creatorVersion}"
-
-        self.NWBFile = NWBFile(
-            session_description="",
+        # creatorName = self.abfFiles[0]._stringsIndexed.uCreatorName
+        # creatorVersion = formatVersion(self.abfFiles[0].creatorVersion)
+        nwbfile_kwargs = dict(
+            session_description=session_description,
             session_start_time=self.start_time,
-            experiment_description=experiment_description,
             identifier=self.inputCellName,
+            file_create_date=datetime.now(tzlocal()),
             experimenter=None,
             notes="",
+            experiment_description="",
+            # experiment_description="{} v{}".format(creatorName, creatorVersion),
+            source_script_file_name="run_x_to_nwb_conversion.py",
+            source_script=json.dumps(getPackageInfo(), sort_keys=True, indent=4),
+            session_id=PLACEHOLDER,
         )
+
+        if self.metadata and "NWBFile" in self.metadata:
+            nwbfile_kwargs.update(self.metadata["NWBFile"])
+        # Create nwbfile with initial metadata
+        self.NWBFile = NWBFile(**nwbfile_kwargs)
         return self.NWBFile
 
     def _createDevice(self):
@@ -154,6 +185,12 @@ class ABF1Converter:
         creatorVersion = self.abfFiles[0]._headerV1.creatorVersionString
 
         self.device = self.NWBFile.create_device(name=f"{creatorInfo} {creatorVersion}")
+
+    def _createSubject(self):
+        """
+        Create a pynwb Subject object from the metadata contents.
+        """
+        return Subject(**self.metadata["Subject"])
 
     def _createElectrode(self):
 
@@ -380,7 +417,18 @@ class ABF1Converter:
         :return: True (for success)
         """
 
-        self._createNWBFile()
+        nwbFile = self._createNWBFile()
+        # If Subject information is present in metadata
+        if self.metadata is not None:
+            if "Subject" in self.metadata:
+                nwbFile.subject = self._createSubject()
+            if "lab_meta_data" in self.metadata:
+                nwbFile.add_lab_meta_data(
+                    DandiIcephysMetadata(
+                        cell_id=self.metadata["lab_meta_data"].get("cell_id", None),
+                        tissue_sample_id=self.metadata["lab_meta_data"].get("tissue_sample_id", None),
+                    )
+                )
         self._createDevice()
         self._createElectrode()
         self._addStimulus()
