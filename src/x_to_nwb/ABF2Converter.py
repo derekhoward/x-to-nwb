@@ -54,7 +54,7 @@ class ABF2Converter:
         includeChannelList=None,
         discardChannelList=None,
         stimulus_name=None,
-        metadata=None
+        metadata=None,
     ):
         """
         Convert the given ABF file to NWB. By default all ADC channel are written in to the NWB file.
@@ -66,7 +66,7 @@ class ABF2Converter:
         searchSettingsFile    -- Search the JSON settings file and warn if it could not be found
         includeChannelList    -- ADC channels to write into the NWB file
         discardChannelList    -- ADC channels to not write into the NWB file
-        stimulus_name         -- 
+        stimulus_name         --
         metadata              -- Metadata dictionary with user-defined values for some nwb fields
         """
 
@@ -112,13 +112,13 @@ class ABF2Converter:
 
         # If Subject information is present in metadata
         if self.metadata is not None:
-            if 'Subject' in self.metadata:
+            if "Subject" in self.metadata:
                 nwbFile.subject = self._createSubject()
-            if 'lab_meta_data' in self.metadata:
+            if "lab_meta_data" in self.metadata:
                 nwbFile.add_lab_meta_data(
                     DandiIcephysMetadata(
-                        cell_id=self.metadata['lab_meta_data'].get('cell_id', None),
-                        tissue_sample_id=self.metadata['lab_meta_data'].get('tissue_sample_id', None),
+                        cell_id=self.metadata["lab_meta_data"].get("cell_id", None),
+                        tissue_sample_id=self.metadata["lab_meta_data"].get("tissue_sample_id", None),
                     )
                 )
 
@@ -370,11 +370,11 @@ class ABF2Converter:
             experiment_description="{} v{}".format(creatorName, creatorVersion),
             source_script_file_name="run_x_to_nwb_conversion.py",
             source_script=json.dumps(getPackageInfo(), sort_keys=True, indent=4),
-            session_id=PLACEHOLDER
+            session_id=PLACEHOLDER,
         )
 
-        if self.metadata and 'NWBFile' in self.metadata:
-            nwbfile_kwargs.update(self.metadata['NWBFile'])
+        if self.metadata and "NWBFile" in self.metadata:
+            nwbfile_kwargs.update(self.metadata["NWBFile"])
 
         # Create nwbfile with initial metadata
         nwbfile = NWBFile(**nwbfile_kwargs)
@@ -395,7 +395,7 @@ class ABF2Converter:
         """
         Create a pynwb Subject object from the metadata contents.
         """
-        return Subject(**self.metadata['Subject'])
+        return Subject(**self.metadata["Subject"])
 
     def _createElectrodes(self, device):
         """
