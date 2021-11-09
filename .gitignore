@@ -8,3 +8,4 @@ dist/
 
 tests/data/*.nwb
 tests/data/*.html
+*.DS_Store
